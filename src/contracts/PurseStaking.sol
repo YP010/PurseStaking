@@ -28,16 +28,10 @@ contract PurseStaking is Initializable, UUPSUpgradeable, OwnableUpgradeable, Pau
     uint256 private _totalReceiptSupply;
        
     struct UserInfo {
-        uint256 receiptToken;
-        uint256 newReceiptToken;
-        uint256 withdrawReward;
-        uint256 lockTime;
+        uint256 receiptToken;   
     }
 
     mapping (address => UserInfo) public userInfo;
-
-    uint256 private _totalLockedAmount;
-    uint256 public lockPeriod;
 
     function initialize(IPurseToken _purseToken) public initializer {
         purseToken = _purseToken;
@@ -45,104 +39,14 @@ contract PurseStaking is Initializable, UUPSUpgradeable, OwnableUpgradeable, Pau
         __Pausable_init();
         __Ownable_init();
         __UUPSUpgradeable_init();
-        lockPeriod = 1814400;
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
 
     event Deposit(address indexed _from, uint256 _value);
-    event WithdrawOldStake(address indexed _from, uint256 _value);
-    event WithdrawNewStake(address indexed _from, uint256 _value);
+    event Withdraw(address indexed _from, uint256 _value);
 
     function enter(uint256 purseAmount) external whenNotPaused returns (bool success) {
-        require(purseToken.balanceOf(msg.sender) >= purseAmount, "Insufficient Purse Token");
-        
-        uint256 totalXPurse = totalReceiptSupply();
-        uint256 totalPurse = availablePurseSupply();
-
-        purseToken.transferFrom(msg.sender, address(this), purseAmount);
-
-        if (totalXPurse <= 0 || totalPurse <= 0) {
-            require(totalXPurse <= 0, "Total Receipt > 0");
-            userInfo[msg.sender].newReceiptToken = purseAmount;
-            _totalReceiptSupply += purseAmount;
-        }
-        else {
-            uint256 newReceipt = purseAmount.mul(totalXPurse).div(totalPurse);
-            userInfo[msg.sender].newReceiptToken += newReceipt;
-            _totalReceiptSupply += newReceipt;
-        }
-        emit Deposit(msg.sender, purseAmount);
-        return true;
-    }
-
-    function leave(uint256 xPurseAmount) external whenNotPaused returns (bool success){
-        UserInfo storage user = userInfo[msg.sender];
-        uint256 userReceipt = userReceiptToken(msg.sender);
-        uint256 totalXPurse = totalReceiptSupply();
-        uint256 totalPurse = availablePurseSupply();
-        uint256 purseAmount;
-        uint256 purseReward;
-        require(userReceipt >= xPurseAmount, "Insufficient Receipt Token");
-
-        if(user.receiptToken <= 0) {
-            uint256 lockDuration = block.timestamp.sub(user.lockTime); 
-            if (lockDuration >= lockPeriod && user.lockTime != 0) {
-                withdrawLockedAmount();
-            }
-            purseReward = xPurseAmount.mul(totalPurse).div(totalXPurse);
-            user.newReceiptToken -= xPurseAmount;
-            handleReceipt(purseReward);
-        } else {
-            if(xPurseAmount > user.receiptToken) {
-                uint256 newReceipt = xPurseAmount.sub(user.receiptToken);
-                purseReward = newReceipt.mul(totalPurse).div(totalXPurse);
-                purseAmount = user.receiptToken.mul(totalPurse).div(totalXPurse);
-                user.newReceiptToken -= newReceipt;
-                user.receiptToken = 0;
-                handleReceipt(purseReward);
-            } else {
-                purseAmount = xPurseAmount.mul(totalPurse).div(totalXPurse);
-                user.receiptToken -= xPurseAmount;
-            }
-            uint256 purseTransfer = safePurseTransfer(purseAmount);
-            emit WithdrawOldStake(msg.sender, purseTransfer);
-            purseToken.transfer(msg.sender, purseTransfer);
-        }
-        _totalReceiptSupply -= xPurseAmount;
-        return true;
-    }
-
-    function handleReceipt(uint256 _purseReward) internal {
-        UserInfo storage user = userInfo[msg.sender];             
-        user.withdrawReward += _purseReward;
-        user.lockTime = block.timestamp;
-        _totalLockedAmount += _purseReward;
-    }
-
-    function updateLockPeriod(uint256 newLockPeriod) external onlyOwner {
-        require(newLockPeriod != lockPeriod, "Same as Previous Lock Period");
-        lockPeriod = newLockPeriod;
-    }
-
-    function withdrawLockedAmount() public whenNotPaused returns (bool success){
-        UserInfo storage user = userInfo[msg.sender];
-        uint256 lockDuration = block.timestamp.sub(user.lockTime); 
-        require(user.withdrawReward > 0, "Insufficient Withdrawal Amount");
-        require(lockDuration >= lockPeriod && user.lockTime != 0, "Lock Time < Lock Period and/or Lock Time == 0");
-
-        uint256 purseTransfer = safePurseTransfer(user.withdrawReward);
-        _totalLockedAmount -= user.withdrawReward;
-        user.withdrawReward = 0;
-        user.lockTime = 0;
-
-        emit WithdrawNewStake(msg.sender, purseTransfer);
-        purseToken.transfer(msg.sender, purseTransfer);
-        return true;
-    }
-
-    //For Testing
-    function enterOld(uint256 purseAmount) external whenNotPaused returns (bool success) {
         require(purseToken.balanceOf(msg.sender) >= purseAmount, "Insufficient Purse Token");
         
         uint256 totalPurse = purseToken.balanceOf(address(this));
@@ -164,29 +68,30 @@ contract PurseStaking is Initializable, UUPSUpgradeable, OwnableUpgradeable, Pau
         return true;
     }
 
+    function leave(uint256 xPurseAmount) external whenNotPaused returns (bool success){  
+        require(userInfo[msg.sender].receiptToken >= xPurseAmount, "Insufficient Receipt Token");
+        
+        uint256 totalXPurse = totalReceiptSupply();
+        uint256 purseAmount = xPurseAmount.mul(purseToken.balanceOf(address(this))).div(totalXPurse);
+        
+        userInfo[msg.sender].receiptToken -= xPurseAmount;
+        _totalReceiptSupply -= xPurseAmount;
+
+        uint256 purseTransfer = safePurseTransfer(purseAmount);
+        emit Withdraw(msg.sender, purseTransfer);
+        purseToken.transfer(msg.sender, purseTransfer);
+        return true;
+    }
+
     function safePurseTransfer(uint256 amount) internal view returns (uint256) {
-        uint256 totalPurse = availablePurseSupply();
-        return amount > totalPurse ? totalPurse : amount;
+        uint256 purseBal = purseToken.balanceOf(address(this));
+        return amount > purseBal ? purseBal : amount;
     }
 
     function getTotalPurse(address purseOwner) external view returns (uint256){  
         uint256 totalXPurse = totalReceiptSupply();
-        uint256 totalPurse = availablePurseSupply();
-        uint256 userReceipt = userReceiptToken(purseOwner);
-        uint256 purseAmount = userReceipt.mul(totalPurse).div(totalXPurse);
+        uint256 purseAmount = userInfo[purseOwner].receiptToken.mul(purseToken.balanceOf(address(this))).div(totalXPurse);
         return purseAmount;
-    }
-
-    function userReceiptToken(address purseOwner) public view returns (uint256) {
-        return userInfo[purseOwner].receiptToken.add(userInfo[purseOwner].newReceiptToken);
-    }
-
-    function totalLockedAmount() public view returns (uint256) {
-        return _totalLockedAmount;
-    }
-
-    function availablePurseSupply() public view returns (uint256) {
-        return purseToken.balanceOf(address(this)).sub(totalLockedAmount());
     }
 
     function totalReceiptSupply() public view returns (uint256) {
